@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>JS Self-Profiling Markers Test (COI)</title>
+  <style>
+    body { font-family: monospace; margin: 20px; background: #1a1a2e; color: #eee; }
+    h1 { color: #e94560; }
+    #status { padding: 10px; border-radius: 4px; margin: 10px 0; }
+    .pass { background: #0a3d0a; border: 1px solid #0f0; }
+    .fail { background: #3d0a0a; border: 1px solid #f00; }
+    .info { background: #0a0a3d; border: 1px solid #00f; }
+    #results { white-space: pre-wrap; background: #111; padding: 15px; border-radius: 4px; }
+    button { background: #e94560; color: #fff; border: none; padding: 10px 20px;
+             cursor: pointer; border-radius: 4px; font-size: 14px; margin: 5px; }
+    button:hover { background: #c73a52; }
+  </style>
+</head>
+<body>
+  <h1>JS Self-Profiling Markers Test (COI)</h1>
+
+  <div id="status" class="info">Checking environment...</div>
+
+  <div>
+    <button onclick="runTest()">Run Profiling Test</button>
+  </div>
+
+  <div id="results"></div>
+
+  <!-- Element used to trigger layout/style/paint -->
+  <div id="box" style="width:100px; height:100px; background:red; margin-top:20px;"></div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const resultsEl = document.getElementById('results');
+    const isCOI = self.crossOriginIsolated;
+
+    // Detect COI status
+    statusEl.textContent = isCOI
+      ? '✓ Cross-Origin-Isolated: YES — all markers expected (gc, layout, style, paint, script)'
+      : '✗ Cross-Origin-Isolated: NO — only layout and style markers expected';
+    statusEl.className = isCOI ? 'pass' : 'info';
+
+    function log(msg) {
+      resultsEl.textContent += msg + '\n';
+    }
+
+    function forceLayoutAndStyle() {
+      const box = document.getElementById('box');
+      for (let i = 0; i < 200; i++) {
+        box.style.width = (100 + i) + 'px';
+        box.style.backgroundColor = i % 2 === 0 ? 'red' : 'blue';
+        // Force synchronous layout
+        void box.offsetHeight;
+        void getComputedStyle(box).backgroundColor;
+      }
+    }
+
+    async function runTest() {
+      resultsEl.textContent = '';
+      log('=== JS Self-Profiling Markers Test (COI) ===');
+      log(`Cross-Origin-Isolated: ${isCOI}`);
+      log('');
+
+      if (typeof Profiler === 'undefined') {
+        log('ERROR: Profiler API not available.');
+        log('Make sure Chrome is launched with:');
+        log('  --enable-features=ExperimentalJSProfiler,ExperimentalJSProfilerMarkers');
+        log('  --enable-blink-features=ExperimentalJSProfiler,ExperimentalJSProfilerMarkers');
+        return;
+      }
+
+      log('Starting profiler (sampleInterval: 1ms)...');
+
+      let profiler;
+      try {
+        profiler = new Profiler({ sampleInterval: 1, maxBufferSize: 10000 });
+      } catch (e) {
+        log(`ERROR creating profiler: ${e.message}`);
+        return;
+      }
+
+      log('Running workloads to trigger markers...\n');
+
+      // Generate work to trigger markers
+      log('  → Forcing layout & style...');
+      forceLayoutAndStyle();
+
+      // Give time for samples to be collected
+      await new Promise(r => setTimeout(r, 500));
+      log('  → Forcing layout & style (round 2)...');
+      forceLayoutAndStyle();
+      await new Promise(r => setTimeout(r, 500));
+
+      log('\nStopping profiler...');
+      const trace = await profiler.stop();
+
+      log(`\nCollected ${trace.samples.length} samples`);
+
+      // Collect all unique markers
+      const markerCounts = {};
+      let samplesWithMarker = 0;
+      let samplesWithoutMarker = 0;
+
+      for (const sample of trace.samples) {
+        if (sample.marker) {
+          samplesWithMarker++;
+          markerCounts[sample.marker] = (markerCounts[sample.marker] || 0) + 1;
+        } else {
+          samplesWithoutMarker++;
+        }
+      }
+
+      log(`\n=== MARKER RESULTS ===`);
+      log(`Samples with markers:    ${samplesWithMarker}`);
+      log(`Samples without markers: ${samplesWithoutMarker}`);
+      log('');
+
+      const allMarkers = ['gc', 'layout', 'paint', 'script', 'style'];
+      const safeMarkers = ['layout', 'style'];
+      const coiOnlyMarkers = ['gc', 'paint', 'script'];
+
+      const expected = isCOI ? allMarkers : safeMarkers;
+      const notExpected = allMarkers.filter(m => !expected.includes(m));
+
+      log('Markers found:');
+      for (const marker of allMarkers) {
+        const count = markerCounts[marker] || 0;
+        const shouldExist = expected.includes(marker);
+        const icon = count > 0
+          ? (shouldExist ? '✓' : '✗ UNEXPECTED')
+          : (shouldExist ? '✗ MISSING' : '✓ (correctly absent)');
+        log(`  ${icon}  ${marker}: ${count} samples`);
+      }
+
+      // Unknown markers
+      for (const [marker, count] of Object.entries(markerCounts)) {
+        if (!allMarkers.includes(marker)) {
+          log(`  ? UNKNOWN marker "${marker}": ${count} samples`);
+        }
+      }
+
+      log('\n=== VALIDATION ===');
+      let allPassed = true;
+
+      for (const marker of expected) {
+        if (!markerCounts[marker]) {
+          log(`WARN: Expected marker "${marker}" not found (may need longer profiling or more work)`);
+        }
+      }
+
+      for (const marker of notExpected) {
+        if (markerCounts[marker]) {
+          log(`FAIL: Marker "${marker}" should NOT appear in ${isCOI ? 'COI' : 'non-COI'} context but found ${markerCounts[marker]} samples`);
+          allPassed = false;
+        }
+      }
+
+      if (allPassed) {
+        log(`\n✓ PASS — No unexpected markers in ${isCOI ? 'COI' : 'non-COI'} context`);
+        statusEl.textContent = '✓ TEST PASSED';
+        statusEl.className = 'pass';
+      } else {
+        log(`\n✗ FAIL — Unexpected markers found`);
+        statusEl.textContent = '✗ TEST FAILED';
+        statusEl.className = 'fail';
+      }
+
+      // Dump raw sample markers for debugging
+      log('\n=== RAW SAMPLE MARKERS (first 50) ===');
+      for (let i = 0; i < Math.min(50, trace.samples.length); i++) {
+        const s = trace.samples[i];
+        log(`  [${i}] timestamp=${s.timestamp.toFixed(2)}ms marker=${s.marker || '(none)'} stackId=${s.stackId ?? '(none)'}`);
+      }
+    }
+
+  </script>
+</body>
+</html>

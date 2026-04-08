@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>JS Self-Profiling Markers Test</title>
+  <style>
+    body { font-family: monospace; margin: 20px; background: #fff; color: #222; }
+    h1 { color: #c0392b; }
+    #status { padding: 10px; border-radius: 4px; margin: 10px 0; }
+    .pass { background: #d4edda; border: 1px solid #28a745; color: #155724; }
+    .fail { background: #f8d7da; border: 1px solid #dc3545; color: #721c24; }
+    .info { background: #d1ecf1; border: 1px solid #17a2b8; color: #0c5460; }
+    #results { white-space: pre-wrap; background: #f5f5f5; padding: 15px; border-radius: 4px; border: 1px solid #ddd; }
+    button { background: #c0392b; color: #fff; border: none; padding: 10px 20px;
+             cursor: pointer; border-radius: 4px; font-size: 14px; margin: 5px; }
+    button:hover { background: #a93226; }
+    .marker-tag { display: inline-block; padding: 2px 8px; margin: 2px;
+                  border-radius: 3px; font-weight: bold; }
+    .marker-gc { background: #e94560; color: #fff; }
+    .marker-layout { background: #0f9b58; color: #fff; }
+    .marker-style { background: #4285f4; color: #fff; }
+    .marker-paint { background: #f4b400; color: #000; }
+    .marker-script { background: #ab47bc; color: #fff; }
+    .marker-none { background: #ccc; color: #333; }
+  </style>
+</head>
+<body>
+  <h1>JS Self-Profiling Markers Test</h1>
+
+  <div id="status" class="info">Checking environment...</div>
+
+  <div>
+    <button onclick="runTest()">Run Profiling Test</button>
+  </div>
+
+  <div id="results"></div>
+
+  <!-- Container used to trigger layout/style/paint -->
+  <div id="target" style="width:100px; height:100px; background:red; margin-top:20px;"></div>
+  <div id="dom-container" style="display:none;"></div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const resultsEl = document.getElementById('results');
+    const targetEl = document.getElementById('target');
+
+    // Detect COI status
+    const isCOI = self.crossOriginIsolated;
+    statusEl.textContent = isCOI
+      ? '✓ Cross-Origin-Isolated: YES — all markers expected (gc, layout, style, paint, script)'
+      : '✗ Cross-Origin-Isolated: NO — only layout and style markers expected';
+    statusEl.className = isCOI ? 'pass' : 'info';
+
+    function log(msg) {
+      resultsEl.textContent += msg + '\n';
+    }
+
+    // Force layout — create many elements and read layout properties
+    function forceLayout() {
+      const container = document.getElementById('dom-container');
+      container.style.display = 'block';
+      // Create a deep DOM tree
+      const elements = [];
+      for (let i = 0; i < 500; i++) {
+        const div = document.createElement('div');
+        div.style.cssText = 'position:relative; padding:1px; margin:1px; border:1px solid black;';
+        div.textContent = 'layout test ' + i;
+        container.appendChild(div);
+        elements.push(div);
+      }
+      const start = performance.now();
+      while (performance.now() - start < 300) {
+        for (let i = 0; i < elements.length; i++) {
+          elements[i].style.width = ((i % 200) + 50) + 'px';
+          elements[i].style.height = ((i % 50) + 10) + 'px';
+          elements[i].style.padding = (i % 5) + 'px';
+          // Force synchronous layout
+          void elements[i].getBoundingClientRect();
+          void elements[i].offsetHeight;
+          void elements[i].offsetWidth;
+          void elements[i].offsetTop;
+        }
+      }
+      container.innerHTML = '';
+      container.style.display = 'none';
+      return performance.now() - start;
+    }
+
+    // Force style recalculation — mutate classes and read computed styles on many elements
+    function forceStyle() {
+      const container = document.getElementById('dom-container');
+      container.style.display = 'block';
+      const elements = [];
+      // Add a complex stylesheet
+      const styleEl = document.createElement('style');
+      styleEl.textContent = `
+        .style-a { color: red !important; font-size: 14px; line-height: 1.5; letter-spacing: 0.5px; }
+        .style-b { color: blue !important; font-size: 16px; line-height: 1.8; letter-spacing: 1px; }
+        .style-a > div { font-weight: bold; }
+        .style-b > div { font-weight: normal; }
+      `;
+      document.head.appendChild(styleEl);
+      for (let i = 0; i < 500; i++) {
+        const div = document.createElement('div');
+        div.className = 'style-a';
+        const inner = document.createElement('div');
+        inner.textContent = 'style test ' + i;
+        div.appendChild(inner);
+        container.appendChild(div);
+        elements.push(div);
+      }
+      const start = performance.now();
+      while (performance.now() - start < 300) {
+        for (let i = 0; i < elements.length; i++) {
+          elements[i].className = (i + Math.round(performance.now())) % 2 === 0 ? 'style-a' : 'style-b';
+          void getComputedStyle(elements[i]).color;
+          void getComputedStyle(elements[i]).fontSize;
+          void getComputedStyle(elements[i]).lineHeight;
+          void getComputedStyle(elements[i]).letterSpacing;
+        }
+      }
+      container.innerHTML = '';
+      container.style.display = 'none';
+      styleEl.remove();
+      return performance.now() - start;
+    }
+
+    // Force GC — allocate heavily then drop references, repeat for 300ms
+    function forceGC() {
+      const start = performance.now();
+      while (performance.now() - start < 300) {
+        let arr = [];
+        for (let i = 0; i < 50000; i++) {
+          arr.push({ data: new Array(100).fill(i) });
+        }
+        arr = null;
+      }
+      return performance.now() - start;
+    }
+
+    // CPU-intensive JS work — run for at least 300ms
+    function forceScript() {
+      const start = performance.now();
+      let sum = 0;
+      while (performance.now() - start < 300) {
+        for (let i = 0; i < 100000; i++) {
+          sum += Math.sqrt(i) * Math.sin(i);
+        }
+      }
+      return performance.now() - start;
+    }
+
+    // Force paint via requestAnimationFrame, returns a promise
+    function forcePaint() {
+      const container = document.getElementById('dom-container');
+      container.style.display = 'block';
+      // Create visible content that requires painting
+      for (let i = 0; i < 200; i++) {
+        const div = document.createElement('div');
+        div.style.cssText = `width:${50 + i}px; height:20px; background:hsl(${i},80%,50%); margin:1px;`;
+        container.appendChild(div);
+      }
+      return new Promise(resolve => {
+        const start = performance.now();
+        let frames = 0;
+        function frame() {
+          const children = container.children;
+          for (let i = 0; i < children.length; i++) {
+            children[i].style.transform = `translateX(${Math.sin(frames + i) * 50}px)`;
+            children[i].style.opacity = 0.5 + 0.5 * Math.cos(frames + i);
+            children[i].style.backgroundColor = `hsl(${(frames * 10 + i) % 360},80%,50%)`;
+          }
+          frames++;
+          if (performance.now() - start < 300) {
+            requestAnimationFrame(frame);
+          } else {
+            container.innerHTML = '';
+            container.style.display = 'none';
+            resolve(performance.now() - start);
+          }
+        }
+        requestAnimationFrame(frame);
+      });
+    }
+
+    async function runTest() {
+      resultsEl.textContent = '';
+      log('=== JS Self-Profiling Markers Test ===');
+      log(`Cross-Origin-Isolated: ${isCOI}`);
+      log('');
+
+      // Check if Profiler API is available
+      if (typeof Profiler === 'undefined') {
+        log('ERROR: Profiler API not available.');
+        log('Make sure Chrome is launched with:');
+        log('  --enable-experimental-web-platform-features');
+        log('And the page is served with:');
+        log('  Document-Policy: js-profiling');
+        return;
+      }
+
+      log('Starting profiler (sampleInterval: 1ms)...');
+
+      let profiler;
+      try {
+        profiler = new Profiler({ sampleInterval: 1, maxBufferSize: 100000 });
+      } catch (e) {
+        log(`ERROR creating profiler: ${e.message}`);
+        return;
+      }
+
+      log('Running workloads to trigger markers...\n');
+      log('  Each workload runs for ~300ms with heavy DOM work.\n');
+
+      log('  → Forcing layout (500 elements, reading getBoundingClientRect)...');
+      let dur = forceLayout();
+      log(`    ran for ${dur.toFixed(0)}ms`);
+
+      await new Promise(r => setTimeout(r, 50));
+
+      log('  → Forcing style recalc (500 elements, toggling classes)...');
+      dur = forceStyle();
+      log(`    ran for ${dur.toFixed(0)}ms`);
+
+      await new Promise(r => setTimeout(r, 50));
+
+      log('  → Forcing paint (200 elements, requestAnimationFrame animation)...');
+      dur = await forcePaint();
+      log(`    ran for ${dur.toFixed(0)}ms`);
+
+      await new Promise(r => setTimeout(r, 50));
+
+      log('  → Forcing GC pressure...');
+      dur = forceGC();
+      log(`    ran for ${dur.toFixed(0)}ms`);
+
+      await new Promise(r => setTimeout(r, 50));
+
+      log('  → Running CPU-intensive JS...');
+      dur = forceScript();
+      log(`    ran for ${dur.toFixed(0)}ms`);
+
+      // Yield to let any pending paint/GC happen
+      await new Promise(r => setTimeout(r, 200));
+
+      log('\nStopping profiler...');
+      const trace = await profiler.stop();
+
+      log(`\nCollected ${trace.samples.length} samples`);
+      log(`Resources: ${trace.resources.length}`);
+      log(`Frames: ${trace.frames.length}`);
+      log(`Stacks: ${trace.stacks.length}`);
+
+      // Diagnostic: check if any sample has the marker property
+      const hasMarkerProp = trace.samples.some(s => 'marker' in s);
+      log(`\n=== DIAGNOSTIC ===`);
+      log(`"marker" property found on at least one sample: ${hasMarkerProp}`);
+      if (!hasMarkerProp) {
+        log(`  ⚠ No samples have the "marker" field.`);
+        log(`  This likely means the ExperimentalJSProfilerMarkers feature`);
+        log(`  is not enabled in this Chrome build.`);
+        log(`  Sample keys: [${Object.keys(trace.samples[0] || {}).join(', ')}]`);
+      }
+
+      // Count markers
+      const markerCounts = {};
+      let samplesWithMarker = 0;
+      let samplesWithoutMarker = 0;
+
+      for (const sample of trace.samples) {
+        if (sample.marker) {
+          samplesWithMarker++;
+          markerCounts[sample.marker] = (markerCounts[sample.marker] || 0) + 1;
+        } else {
+          samplesWithoutMarker++;
+        }
+      }
+
+      log(`\n=== MARKER RESULTS ===`);
+      log(`Samples with markers:    ${samplesWithMarker}`);
+      log(`Samples without markers: ${samplesWithoutMarker}`);
+      log('');
+
+      const allMarkers = ['gc', 'layout', 'style', 'paint', 'script'];
+      const expectedInCOI = ['gc', 'layout', 'style', 'paint', 'script'];
+      const expectedInNonCOI = ['layout', 'style'];
+
+      const expected = isCOI ? expectedInCOI : expectedInNonCOI;
+      const notExpected = allMarkers.filter(m => !expected.includes(m));
+
+      log('Markers found:');
+      for (const marker of allMarkers) {
+        const count = markerCounts[marker] || 0;
+        const shouldExist = expected.includes(marker);
+        const icon = count > 0
+          ? (shouldExist ? '✓' : '✗ UNEXPECTED')
+          : (shouldExist ? '✗ MISSING' : '✓ (correctly absent)');
+        log(`  ${icon}  ${marker}: ${count} samples`);
+      }
+
+      // Unknown markers
+      for (const [marker, count] of Object.entries(markerCounts)) {
+        if (!allMarkers.includes(marker)) {
+          log(`  ? UNKNOWN marker "${marker}": ${count} samples`);
+        }
+      }
+
+      log('\n=== VALIDATION ===');
+      let allPassed = true;
+
+      // Check expected markers appear (hard fail if missing)
+      for (const marker of expected) {
+        if (!markerCounts[marker]) {
+          log(`FAIL: Expected marker "${marker}" not found`);
+          allPassed = false;
+        }
+      }
+
+      // Check unexpected markers do NOT appear (hard fail)
+      for (const marker of notExpected) {
+        if (markerCounts[marker]) {
+          log(`FAIL: Marker "${marker}" should NOT appear in ${isCOI ? 'COI' : 'non-COI'} context but found ${markerCounts[marker]} samples`);
+          allPassed = false;
+        }
+      }
+
+      if (allPassed) {
+        log(`\n✓ PASS`);
+        statusEl.textContent = '✓ TEST PASSED';
+        statusEl.className = 'pass';
+      } else {
+        log(`\n✗ FAIL`);
+        statusEl.textContent = '✗ TEST FAILED';
+        statusEl.className = 'fail';
+      }
+
+      // Dump raw sample markers for debugging
+      log('\n=== RAW SAMPLE MARKERS (first 50) ===');
+      for (let i = 0; i < Math.min(50, trace.samples.length); i++) {
+        const s = trace.samples[i];
+        log(`  [${i}] timestamp=${s.timestamp.toFixed(2)}ms marker=${s.marker || '(none)'} stackId=${s.stackId ?? '(none)'}`);
+      }
+    }
+  </script>
+</body>
+</html>
