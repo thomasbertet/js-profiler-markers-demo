@@ -127,6 +127,28 @@
       font-style: italic;
     }
     #tooltip .tt-nostack { color: #777; font-style: italic; }
+    #tooltip .tt-src {
+      margin-top: 6px;
+      border-top: 1px solid #2a2a3a;
+      padding-top: 6px;
+    }
+    #tooltip .tt-src pre {
+      margin: 0;
+      font-family: monospace;
+      font-size: 11px;
+      line-height: 1.6;
+      white-space: pre;
+      overflow-x: auto;
+      background: #0a0a16;
+      border: 1px solid #2a2a3e;
+      border-radius: 3px;
+      padding: 5px 8px;
+    }
+    #tooltip .tt-src-line { color: #555577; }
+    #tooltip .tt-src-line.tt-src-target { color: #e0e0e0; background: #1e1e3a; display: block; border-radius: 2px; }
+    #tooltip .tt-src-caret { color: #e94560; user-select: none; }
+    #tooltip .tt-src-loading { color: #555; font-style: italic; font-size: 11px; }
+    #tooltip .tt-src-label { font-size: 10px; color: #555577; margin-bottom: 3px; }
 
     /* ── Stats bar ── */
     #stats {
@@ -218,7 +240,7 @@
       js:      '#ce93d8',  // lighter purple — same family as script, clearly inferred
       compile: '#ff7043',
       native:  '#26c6da',
-      idle:    '#37374f',
+      idle:    '#6b6b8a',
     };
 
     // Ordered display lists for each section
@@ -478,9 +500,6 @@
         const x     = PAD_L + ((sample.timestamp - tMin) / tSpan) * usableW;
         const y     = laneY(key) + (ROW_H - DOT_H) / 2;
         const color = MARKER_COLORS[key];
-
-        // Explicit markers — solid filled rect
-        // Inferred lanes   — outlined rect (stroke only), slightly transparent
         const isInferred = INFERRED_LANES.includes(key);
         ctx.globalAlpha = isInferred ? 0.65 : 0.85;
 
@@ -522,6 +541,85 @@
       ctx.lineTo(x, y + r);
       ctx.arcTo(x, y, x + r, y, r);
       ctx.closePath();
+    }
+
+    // ── Source fetcher ────────────────────────────────────────────────────
+    // Cache: url → string[] (lines, 1-indexed via [line-1])
+    const _srcCache = new Map();
+    // In-flight promises so we don't double-fetch
+    const _srcFetching = new Map();
+
+    async function fetchSourceLines(url) {
+      if (_srcCache.has(url)) return _srcCache.get(url);
+      if (_srcFetching.has(url)) return _srcFetching.get(url);
+      const p = (async () => {
+        try {
+          const res = await fetch(url, { credentials: 'same-origin' });
+          if (!res.ok) return null;
+          const text = await res.text();
+          const lines = text.split('\n');
+          _srcCache.set(url, lines);
+          return lines;
+        } catch {
+          _srcCache.set(url, null); // mark as unfetchable
+          return null;
+        }
+      })();
+      _srcFetching.set(url, p);
+      return p;
+    }
+
+    // Build a 5-line source snippet (±2 around targetLine) with column caret.
+    // targetLine and targetCol are 1-based.
+    function buildSourceSnippet(lines, targetLine, targetCol) {
+      const CONTEXT = 2;
+      const from = Math.max(1, targetLine - CONTEXT);
+      const to   = Math.min(lines.length, targetLine + CONTEXT);
+
+      let html = '';
+      for (let ln = from; ln <= to; ln++) {
+        const raw     = lines[ln - 1] ?? '';
+        const escaped = raw.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const gutter  = String(ln).padStart(4, ' ');
+        const isTarget = ln === targetLine;
+        html += `<span class="tt-src-line${isTarget ? ' tt-src-target' : ''}">`;
+        html += `<span style="color:#3a3a5a;user-select:none">${gutter} │ </span>${escaped}`;
+        html += `</span>\n`;
+        if (isTarget && targetCol != null) {
+          const gutterW = 7; // '1234 │ '.length
+          const spaces  = ' '.repeat(gutterW + Math.max(0, targetCol - 1));
+          html += `<span class="tt-src-caret">${spaces}^</span>\n`;
+        }
+      }
+      return html;
+    }
+
+    // Patch the #tt-src placeholder inside the tooltip (if it's still visible
+    // for the same sample) once source has loaded.
+    let _tooltipSampleTs = null; // timestamp of the sample currently in the tooltip
+
+    async function injectSourceSnippet(frame, sampleTs) {
+      if (frame.resourceId == null || frame.line == null) return;
+      const url = (_trace.resources || [])[frame.resourceId];
+      if (!url) return;
+
+      const lines = await fetchSourceLines(url);
+
+      // Abort if the tooltip moved to a different sample while we were fetching
+      if (_tooltipSampleTs !== sampleTs) return;
+      const placeholder = document.getElementById('tt-src');
+      if (!placeholder) return;
+
+      if (!lines) {
+        placeholder.innerHTML = `<span class="tt-src-loading">⚠ could not fetch source</span>`;
+        return;
+      }
+
+      const shortUrl = url.length > 55 ? '…' + url.slice(-52) : url;
+      const snippet  = buildSourceSnippet(lines, frame.line, frame.column);
+      placeholder.innerHTML =
+        `<div class="tt-src-label">${shortUrl}:${frame.line}:${frame.column ?? '?'}</div>` +
+        `<pre>${snippet}</pre>`;
     }
 
     // ── Tooltip ─────────────────────────────────────────────────────────────
@@ -649,11 +747,21 @@
         html += `</div>`;
       }
 
+      // ── source snippet placeholder (leaf frame with a resource + line)
+      const leafFrame = frames && frames.length ? frames[frames.length - 1] : null;
+      const canShowSrc = leafFrame && leafFrame.resourceId != null && leafFrame.line != null;
+      if (canShowSrc) {
+        html += `<div class="tt-src" id="tt-src"><span class="tt-src-loading">loading source…</span></div>`;
+      }
+
+      _tooltipSampleTs = s.timestamp;
       tooltipEl.innerHTML = html;
       tooltipEl.style.display = 'block';
 
+      if (canShowSrc) injectSourceSnippet(leafFrame, s.timestamp);
+
       // position — keep inside viewport
-      const tw = 480, th = 200;
+      const tw = 480, th = 260;
       let tx = e.clientX + 14;
       let ty = e.clientY + 14;
       if (tx + tw > window.innerWidth)  tx = e.clientX - tw - 14;
@@ -664,6 +772,7 @@
 
     canvas.addEventListener('mouseleave', () => {
       tooltipEl.style.display = 'none';
+      _tooltipSampleTs = null;
     });
 
     window.addEventListener('resize', () => { if (_samples.length) drawTimeline(); });
