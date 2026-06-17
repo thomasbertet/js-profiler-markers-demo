@@ -4,66 +4,481 @@
   <meta charset="utf-8">
   <title>JS Self-Profiling Markers Test</title>
   <style>
-    body { font-family: monospace; margin: 20px; background: #fff; color: #222; }
-    h1 { color: #c0392b; }
-    #status { padding: 10px; border-radius: 4px; margin: 10px 0; }
-    .pass { background: #d4edda; border: 1px solid #28a745; color: #155724; }
-    .fail { background: #f8d7da; border: 1px solid #dc3545; color: #721c24; }
-    .info { background: #d1ecf1; border: 1px solid #17a2b8; color: #0c5460; }
-    #results { white-space: pre-wrap; background: #f5f5f5; padding: 15px; border-radius: 4px; border: 1px solid #ddd; }
-    button { background: #c0392b; color: #fff; border: none; padding: 10px 20px;
-             cursor: pointer; border-radius: 4px; font-size: 14px; margin: 5px; }
-    button:hover { background: #a93226; }
-    .marker-tag { display: inline-block; padding: 2px 8px; margin: 2px;
-                  border-radius: 3px; font-weight: bold; }
-    .marker-gc { background: #e94560; color: #fff; }
-    .marker-layout { background: #0f9b58; color: #fff; }
-    .marker-style { background: #4285f4; color: #fff; }
-    .marker-paint { background: #f4b400; color: #000; }
-    .marker-script { background: #ab47bc; color: #fff; }
-    .marker-none { background: #ccc; color: #333; }
+    * { box-sizing: border-box; }
+    body { font-family: monospace; margin: 20px; background: #1a1a2e; color: #e0e0e0; }
+    h1 { color: #e94560; margin-bottom: 6px; }
+
+    #status { padding: 8px 14px; border-radius: 4px; margin: 10px 0; display: inline-block; font-size: 13px; }
+    .pass   { background: #1a3a2a; border: 1px solid #28a745; color: #5ddb85; }
+    .fail   { background: #3a1a1a; border: 1px solid #dc3545; color: #e96a6a; }
+    .info   { background: #1a2a3a; border: 1px solid #17a2b8; color: #5bc0de; }
+
+    .controls { margin: 12px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    button {
+      background: #e94560; color: #fff; border: none; padding: 8px 18px;
+      cursor: pointer; border-radius: 4px; font-size: 13px; font-family: monospace;
+    }
+    button:hover { background: #c73652; }
+    button:disabled { background: #444; color: #888; cursor: default; }
+
+    /* ── Legend ── */
+    #legend { display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0 4px; }
+    .legend-item {
+      display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;
+      padding: 3px 8px; border-radius: 3px; border: 1px solid transparent;
+      user-select: none;
+    }
+    .legend-item:hover { border-color: #555; }
+    .legend-item.hidden { opacity: 0.35; }
+    .legend-dot { width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
+
+    /* ── Timeline ── */
+    #timeline-wrap {
+      position: relative;
+      margin: 16px 0 0;
+      background: #12121f;
+      border: 1px solid #2a2a3e;
+      border-radius: 6px;
+      padding: 10px 12px 8px;
+      display: none;
+    }
+    #timeline-wrap h2 { margin: 0 0 8px; font-size: 14px; color: #aaa; font-weight: normal; }
+    canvas#timeline {
+      display: block;
+      width: 100%;
+      cursor: crosshair;
+    }
+    #time-axis {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      color: #555;
+      margin-top: 2px;
+    }
+
+    /* ── Tooltip ── */
+    #tooltip {
+      position: fixed;
+      display: none;
+      background: #0d0d1a;
+      border: 1px solid #3a3a5a;
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-size: 12px;
+      max-width: 460px;
+      z-index: 9999;
+      pointer-events: none;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+      line-height: 1.6;
+    }
+    #tooltip .tt-header {
+      font-weight: bold;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+    #tooltip .tt-marker {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 3px;
+      font-weight: bold;
+      font-size: 11px;
+      margin-right: 6px;
+    }
+    #tooltip .tt-stack {
+      margin-top: 8px;
+      border-top: 1px solid #2a2a3a;
+      padding-top: 6px;
+      color: #aaa;
+    }
+    #tooltip .tt-frame {
+      padding-left: 14px;
+      color: #7ec8e3;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #tooltip .tt-frame:first-child { color: #e0e0e0; padding-left: 0; }
+    #tooltip .tt-nostack { color: #e94560; font-style: italic; }
+
+    /* ── Stats bar ── */
+    #stats {
+      display: none;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 10px 0 0;
+      font-size: 12px;
+    }
+    .stat-box {
+      background: #12121f;
+      border: 1px solid #2a2a3e;
+      border-radius: 4px;
+      padding: 6px 12px;
+    }
+    .stat-box span { font-size: 18px; font-weight: bold; display: block; }
+
+    /* ── Log ── */
+    #log-wrap { margin-top: 16px; }
+    #log-wrap summary { cursor: pointer; color: #888; font-size: 12px; margin-bottom: 4px; }
+    #results {
+      white-space: pre-wrap;
+      background: #0d0d1a;
+      padding: 12px;
+      border-radius: 4px;
+      border: 1px solid #2a2a3e;
+      font-size: 11px;
+      color: #888;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    #target { display: none; }
+    #dom-container { display: none; }
   </style>
 </head>
 <body>
-  <h1>JS Self-Profiling Markers Test</h1>
+  <h1>JS Self-Profiling — Marker Timeline</h1>
+  <div id="status" class="info">Checking environment…</div>
 
-  <div id="status" class="info">Checking environment...</div>
-
-  <div>
-    <button onclick="runTest()">Run Profiling Test</button>
+  <div class="controls">
+    <button id="btn-run" onclick="runTest()">▶ Run Profiling Test</button>
   </div>
 
-  <div id="results"></div>
+  <div id="legend"></div>
 
-  <!-- Container used to trigger layout/style/paint -->
-  <div id="target" style="width:100px; height:100px; background:red; margin-top:20px;"></div>
-  <div id="dom-container" style="display:none;"></div>
+  <div id="stats"></div>
+
+  <div id="timeline-wrap">
+    <h2>Sample timeline — hover a dot for stack trace</h2>
+    <canvas id="timeline"></canvas>
+    <div id="time-axis"></div>
+  </div>
+
+  <div id="tooltip"></div>
+
+  <div id="log-wrap">
+    <details>
+      <summary>Raw log</summary>
+      <div id="results"></div>
+    </details>
+  </div>
+
+  <div id="target" style="width:100px;height:100px;background:red;"></div>
+  <div id="dom-container"></div>
 
   <script>
-    const statusEl = document.getElementById('status');
-    const resultsEl = document.getElementById('results');
-    const targetEl = document.getElementById('target');
+    // ── Marker colours ──────────────────────────────────────────────────────
+    const MARKER_COLORS = {
+      gc:     '#e94560',
+      layout: '#0f9b58',
+      style:  '#4285f4',
+      paint:  '#f4b400',
+      script: '#ab47bc',
+      none:   '#555577',
+    };
 
-    // Detect COI status
-    const isCOI = self.crossOriginIsolated;
-    statusEl.textContent = isCOI
-      ? '✓ Cross-Origin-Isolated: YES — all markers expected (gc, layout, style, paint, script)'
-      : '✗ Cross-Origin-Isolated: NO — only layout and style markers expected';
-    statusEl.className = isCOI ? 'pass' : 'info';
+    const ALL_MARKERS = ['layout', 'style', 'gc', 'paint', 'script', 'none'];
+    const hiddenMarkers = new Set();
 
-    function log(msg) {
-      resultsEl.textContent += msg + '\n';
+    // Samples with no marker but a stackId are JS execution — treat as 'script'.
+    // Samples with no marker AND no stackId stay as 'none' (truly empty).
+    function effectiveMarker(sample) {
+      if (sample.marker) return sample.marker;
+      return sample.stackId != null ? 'script' : 'none';
     }
 
-    // Force layout — create many elements and read layout properties
+    // ── DOM refs ────────────────────────────────────────────────────────────
+    const statusEl   = document.getElementById('status');
+    const resultsEl  = document.getElementById('results');
+    const legendEl   = document.getElementById('legend');
+    const statsEl    = document.getElementById('stats');
+    const wrapEl     = document.getElementById('timeline-wrap');
+    const canvas     = document.getElementById('timeline');
+    const axisEl     = document.getElementById('time-axis');
+    const tooltipEl  = document.getElementById('tooltip');
+    const btnRun     = document.getElementById('btn-run');
+
+    const isCOI = self.crossOriginIsolated;
+    statusEl.textContent = isCOI
+      ? '✓ Cross-Origin Isolated — all markers expected'
+      : '✗ Not Cross-Origin Isolated — only layout & style expected';
+    statusEl.className = isCOI ? 'pass' : 'info';
+
+    // ── Legend ──────────────────────────────────────────────────────────────
+    function buildLegend(presentMarkers) {
+      legendEl.innerHTML = '';
+      for (const m of ALL_MARKERS) {
+        if (!presentMarkers.has(m)) continue;
+        const item = document.createElement('div');
+        item.className = 'legend-item';
+        item.dataset.marker = m;
+        item.innerHTML = `<div class="legend-dot" style="background:${MARKER_COLORS[m]}"></div>${m === 'none' ? '(no marker)' : m}`;
+        item.addEventListener('click', () => {
+          hiddenMarkers.has(m) ? hiddenMarkers.delete(m) : hiddenMarkers.add(m);
+          item.classList.toggle('hidden');
+          drawTimeline();
+        });
+        legendEl.appendChild(item);
+      }
+    }
+
+    // ── Stats ────────────────────────────────────────────────────────────────
+    function buildStats(samples, trace) {
+      const counts = {};
+      for (const s of samples) {
+        const k = effectiveMarker(s);
+        counts[k] = (counts[k] || 0) + 1;
+      }
+      statsEl.style.display = 'flex';
+      statsEl.innerHTML = '';
+      const totalBox = document.createElement('div');
+      totalBox.className = 'stat-box';
+      totalBox.innerHTML = `<span>${samples.length}</span>total samples`;
+      statsEl.appendChild(totalBox);
+
+      const noStackCount = samples.filter(s => s.stackId == null).length;
+      const noStackBox = document.createElement('div');
+      noStackBox.className = 'stat-box';
+      noStackBox.innerHTML = `<span style="color:#e94560">${noStackCount}</span>no stack`;
+      statsEl.appendChild(noStackBox);
+
+      for (const m of ALL_MARKERS) {
+        if (!counts[m]) continue;
+        const box = document.createElement('div');
+        box.className = 'stat-box';
+        box.innerHTML = `<span style="color:${MARKER_COLORS[m]}">${counts[m]}</span>${m === 'none' ? '(no marker)' : m}`;
+        statsEl.appendChild(box);
+      }
+    }
+
+    // ── Timeline drawing ────────────────────────────────────────────────────
+    let _samples = [];
+    let _trace   = null;
+    let _hitBoxes = [];   // [{x, y, w, h, sample}]
+
+    const ROW_H    = 22;
+    const DOT_W    = 6;
+    const DOT_H    = 14;
+    const ROWS     = ALL_MARKERS.length;
+    const PAD_L    = 64;  // left gutter for labels
+    const PAD_T    = 4;
+    const PAD_B    = 4;
+
+    function drawTimeline() {
+      if (!_samples.length) return;
+
+      const dpr    = window.devicePixelRatio || 1;
+      const cssW   = canvas.parentElement.clientWidth - 24;
+      const cssH   = PAD_T + ROWS * ROW_H + PAD_B;
+      canvas.style.width  = cssW + 'px';
+      canvas.style.height = cssH + 'px';
+      canvas.width  = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+
+      // background
+      ctx.fillStyle = '#12121f';
+      ctx.fillRect(0, 0, cssW, cssH);
+
+      // row bands
+      for (let r = 0; r < ROWS; r++) {
+        // label gutter (always dark)
+        ctx.fillStyle = '#0d0d1a';
+        ctx.fillRect(0, PAD_T + r * ROW_H, PAD_L, ROW_H);
+        // sample area band
+        ctx.fillStyle = r % 2 === 0 ? '#14142a' : '#12121f';
+        ctx.fillRect(PAD_L, PAD_T + r * ROW_H, cssW - PAD_L, ROW_H);
+        // row label — right-aligned inside gutter
+        const label = ALL_MARKERS[r] === 'none' ? '(none)' : ALL_MARKERS[r];
+        ctx.fillStyle = MARKER_COLORS[ALL_MARKERS[r]];
+        ctx.font = '11px monospace';
+        const tw = ctx.measureText(label).width;
+        ctx.fillText(label, PAD_L - tw - 8, PAD_T + r * ROW_H + ROW_H / 2 + 4);
+      }
+      // separator line between gutter and samples
+      ctx.strokeStyle = '#2a2a3e';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(PAD_L, 0);
+      ctx.lineTo(PAD_L, cssH);
+      ctx.stroke();
+
+      // time range
+      const times = _samples.map(s => s.timestamp);
+      const tMin  = Math.min(...times);
+      const tMax  = Math.max(...times);
+      const tSpan = tMax - tMin || 1;
+
+      const usableW = cssW - PAD_L - 8;
+
+      _hitBoxes = [];
+
+      for (const sample of _samples) {
+        const key = effectiveMarker(sample);
+        if (hiddenMarkers.has(key)) continue;
+        const rowIdx = ALL_MARKERS.indexOf(key);
+        if (rowIdx === -1) continue;
+
+        const x = PAD_L + ((sample.timestamp - tMin) / tSpan) * usableW;
+        const y = PAD_T + rowIdx * ROW_H + (ROW_H - DOT_H) / 2;
+
+        const color = MARKER_COLORS[key];
+        const hasStack = sample.stackId != null;
+
+        ctx.fillStyle = color;
+        ctx.globalAlpha = hasStack ? 0.85 : 0.4;
+        // diamond shape for no-stack samples
+        if (!hasStack) {
+          ctx.save();
+          ctx.translate(x + DOT_W / 2, y + DOT_H / 2);
+          ctx.rotate(Math.PI / 4);
+          ctx.fillRect(-DOT_W * 0.4, -DOT_H * 0.4, DOT_W * 0.8, DOT_H * 0.8);
+          ctx.restore();
+        } else {
+          roundRect(ctx, x, y, DOT_W, DOT_H, 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+
+        _hitBoxes.push({ x, y, w: DOT_W, h: DOT_H, sample });
+      }
+
+      // time axis labels
+      const steps = 6;
+      axisEl.innerHTML = '';
+      for (let i = 0; i <= steps; i++) {
+        const t = tMin + (tSpan * i / steps);
+        const span = document.createElement('span');
+        span.textContent = t.toFixed(1) + 'ms';
+        axisEl.appendChild(span);
+      }
+    }
+
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.arcTo(x + w, y, x + w, y + r, r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+      ctx.lineTo(x + r, y + h);
+      ctx.arcTo(x, y + h, x, y + h - r, r);
+      ctx.lineTo(x, y + r);
+      ctx.arcTo(x, y, x + r, y, r);
+      ctx.closePath();
+    }
+
+    // ── Tooltip ─────────────────────────────────────────────────────────────
+    function resolveStack(stackId, trace) {
+      // Walk the stacks linked list to get frames in call order (root → leaf)
+      if (stackId == null) return null;
+      const frames = [];
+      let sid = stackId;
+      while (sid != null) {
+        const stack = trace.stacks[sid];
+        if (!stack) break;
+        frames.unshift(stack.frameId);
+        sid = stack.parentId != null ? stack.parentId : null;
+      }
+      return frames.map(fid => trace.frames[fid]).filter(Boolean);
+    }
+
+    function formatFrame(frame) {
+      let name = frame.name || '(anonymous)';
+      let loc  = '';
+      if (frame.resourceId != null) {
+        const res = (_trace.resources || [])[frame.resourceId];
+        loc = res ? res : '?';
+        // trim long urls
+        if (loc.length > 60) loc = '…' + loc.slice(-57);
+      }
+      if (frame.line != null) loc += ':' + frame.line;
+      if (frame.column != null) loc += ':' + frame.column;
+      return { name, loc };
+    }
+
+    canvas.addEventListener('mousemove', e => {
+      const rect  = canvas.getBoundingClientRect();
+      const dpr   = window.devicePixelRatio || 1;
+      const mx    = (e.clientX - rect.left);
+      const my    = (e.clientY - rect.top);
+
+      let hit = null;
+      let bestDist = Infinity;
+
+      for (const box of _hitBoxes) {
+        // expand hit area by 4px
+        const pad = 5;
+        if (mx >= box.x - pad && mx <= box.x + box.w + pad &&
+            my >= box.y - pad && my <= box.y + box.h + pad) {
+          const cx = box.x + box.w / 2;
+          const cy = box.y + box.h / 2;
+          const d  = (mx - cx) ** 2 + (my - cy) ** 2;
+          if (d < bestDist) { bestDist = d; hit = box; }
+        }
+      }
+
+      if (!hit) { tooltipEl.style.display = 'none'; return; }
+
+      const s      = hit.sample;
+      const key    = effectiveMarker(s);
+      const color  = MARKER_COLORS[key];
+      const frames = resolveStack(s.stackId, _trace);
+
+      const inferredScript = !s.marker && s.stackId != null;
+      let html = `<div class="tt-header">`;
+      html += `<span class="tt-marker" style="background:${color};color:${key==='paint'?'#000':'#fff'}">${key === 'none' ? '(no marker)' : key}${inferredScript ? ' ❖' : ''}</span>`;
+      if (inferredScript) html += `<span style="color:#888;font-size:10px"> inferred from stack</span>`;
+      html += `t = ${s.timestamp.toFixed(3)} ms</div>`;
+      html += `<div>stackId: ${s.stackId != null ? s.stackId : '<span style="color:#e94560">none</span>'}</div>`;
+
+      if (!frames || frames.length === 0) {
+        html += `<div class="tt-stack"><span class="tt-nostack">⚠ no stack associated with this sample</span></div>`;
+      } else {
+        html += `<div class="tt-stack">`;
+        // show leaf (last) first, then parents
+        const reversed = [...frames].reverse();
+        for (let i = 0; i < reversed.length; i++) {
+          const { name, loc } = formatFrame(reversed[i]);
+          html += `<div class="tt-frame${i === 0 ? '' : ''}" style="padding-left:${i * 10}px">`;
+          html += `<span style="color:${i===0?'#e0e0e0':'#7ec8e3'}">${name}</span>`;
+          if (loc) html += ` <span style="color:#555577;font-size:10px">${loc}</span>`;
+          html += `</div>`;
+        }
+        html += `</div>`;
+      }
+
+      tooltipEl.innerHTML = html;
+      tooltipEl.style.display = 'block';
+
+      // position — keep inside viewport
+      const tw = 480, th = 200;
+      let tx = e.clientX + 14;
+      let ty = e.clientY + 14;
+      if (tx + tw > window.innerWidth)  tx = e.clientX - tw - 14;
+      if (ty + th > window.innerHeight) ty = e.clientY - th - 14;
+      tooltipEl.style.left = tx + 'px';
+      tooltipEl.style.top  = ty + 'px';
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      tooltipEl.style.display = 'none';
+    });
+
+    window.addEventListener('resize', () => { if (_samples.length) drawTimeline(); });
+
+    // ── Log helper ───────────────────────────────────────────────────────────
+    function log(msg) { resultsEl.textContent += msg + '\n'; }
+
+    // ── Workloads (unchanged) ────────────────────────────────────────────────
     function forceLayout() {
       const container = document.getElementById('dom-container');
       container.style.display = 'block';
-      // Create a deep DOM tree
       const elements = [];
       for (let i = 0; i < 500; i++) {
         const div = document.createElement('div');
-        div.style.cssText = 'position:relative; padding:1px; margin:1px; border:1px solid black;';
+        div.style.cssText = 'position:relative;padding:1px;margin:1px;border:1px solid black;';
         div.textContent = 'layout test ' + i;
         container.appendChild(div);
         elements.push(div);
@@ -71,10 +486,9 @@
       const start = performance.now();
       while (performance.now() - start < 300) {
         for (let i = 0; i < elements.length; i++) {
-          elements[i].style.width = ((i % 200) + 50) + 'px';
+          elements[i].style.width  = ((i % 200) + 50) + 'px';
           elements[i].style.height = ((i % 50) + 10) + 'px';
           elements[i].style.padding = (i % 5) + 'px';
-          // Force synchronous layout
           void elements[i].getBoundingClientRect();
           void elements[i].offsetHeight;
           void elements[i].offsetWidth;
@@ -86,18 +500,16 @@
       return performance.now() - start;
     }
 
-    // Force style recalculation — mutate classes and read computed styles on many elements
     function forceStyle() {
       const container = document.getElementById('dom-container');
       container.style.display = 'block';
       const elements = [];
-      // Add a complex stylesheet
       const styleEl = document.createElement('style');
       styleEl.textContent = `
-        .style-a { color: red !important; font-size: 14px; line-height: 1.5; letter-spacing: 0.5px; }
-        .style-b { color: blue !important; font-size: 16px; line-height: 1.8; letter-spacing: 1px; }
-        .style-a > div { font-weight: bold; }
-        .style-b > div { font-weight: normal; }
+        .style-a { color:red!important;font-size:14px;line-height:1.5;letter-spacing:0.5px; }
+        .style-b { color:blue!important;font-size:16px;line-height:1.8;letter-spacing:1px; }
+        .style-a > div { font-weight:bold; }
+        .style-b > div { font-weight:normal; }
       `;
       document.head.appendChild(styleEl);
       for (let i = 0; i < 500; i++) {
@@ -125,39 +537,31 @@
       return performance.now() - start;
     }
 
-    // Force GC — allocate heavily then drop references, repeat for 300ms
     function forceGC() {
       const start = performance.now();
       while (performance.now() - start < 300) {
         let arr = [];
-        for (let i = 0; i < 50000; i++) {
-          arr.push({ data: new Array(100).fill(i) });
-        }
+        for (let i = 0; i < 50000; i++) arr.push({ data: new Array(100).fill(i) });
         arr = null;
       }
       return performance.now() - start;
     }
 
-    // CPU-intensive JS work — run for at least 300ms
     function forceScript() {
       const start = performance.now();
       let sum = 0;
       while (performance.now() - start < 300) {
-        for (let i = 0; i < 100000; i++) {
-          sum += Math.sqrt(i) * Math.sin(i);
-        }
+        for (let i = 0; i < 100000; i++) sum += Math.sqrt(i) * Math.sin(i);
       }
       return performance.now() - start;
     }
 
-    // Force paint via requestAnimationFrame, returns a promise
     function forcePaint() {
       const container = document.getElementById('dom-container');
       container.style.display = 'block';
-      // Create visible content that requires painting
       for (let i = 0; i < 200; i++) {
         const div = document.createElement('div');
-        div.style.cssText = `width:${50 + i}px; height:20px; background:hsl(${i},80%,50%); margin:1px;`;
+        div.style.cssText = `width:${50+i}px;height:20px;background:hsl(${i},80%,50%);margin:1px;`;
         container.appendChild(div);
       }
       return new Promise(resolve => {
@@ -171,9 +575,8 @@
             children[i].style.backgroundColor = `hsl(${(frames * 10 + i) % 360},80%,50%)`;
           }
           frames++;
-          if (performance.now() - start < 300) {
-            requestAnimationFrame(frame);
-          } else {
+          if (performance.now() - start < 300) requestAnimationFrame(frame);
+          else {
             container.innerHTML = '';
             container.style.display = 'none';
             resolve(performance.now() - start);
@@ -183,163 +586,80 @@
       });
     }
 
+    // ── Main test ────────────────────────────────────────────────────────────
     async function runTest() {
       resultsEl.textContent = '';
+      btnRun.disabled = true;
+      btnRun.textContent = '⏳ Running…';
+      hiddenMarkers.clear();
+
       log('=== JS Self-Profiling Markers Test ===');
       log(`Cross-Origin-Isolated: ${isCOI}`);
-      log('');
 
-      // Check if Profiler API is available
       if (typeof Profiler === 'undefined') {
-        log('ERROR: Profiler API not available.');
-        log('Make sure Chrome is launched with:');
-        log('  --enable-experimental-web-platform-features');
-        log('And the page is served with:');
-        log('  Document-Policy: js-profiling');
+        log('ERROR: Profiler API not available.\nMake sure Chrome is launched with --enable-experimental-web-platform-features\nand served with Document-Policy: js-profiling');
+        btnRun.disabled = false;
+        btnRun.textContent = '▶ Run Profiling Test';
         return;
       }
-
-      log('Starting profiler (sampleInterval: 1ms)...');
 
       let profiler;
       try {
         profiler = new Profiler({ sampleInterval: 1, maxBufferSize: 100000 });
-      } catch (e) {
+      } catch(e) {
         log(`ERROR creating profiler: ${e.message}`);
+        btnRun.disabled = false;
+        btnRun.textContent = '▶ Run Profiling Test';
         return;
       }
 
-      log('Running workloads to trigger markers...\n');
-      log('  Each workload runs for ~300ms with heavy DOM work.\n');
+      log('Running workloads…');
 
-      log('  → Forcing layout (500 elements, reading getBoundingClientRect)...');
-      let dur = forceLayout();
-      log(`    ran for ${dur.toFixed(0)}ms`);
-
+      log('  → layout'); forceLayout();
       await new Promise(r => setTimeout(r, 50));
-
-      log('  → Forcing style recalc (500 elements, toggling classes)...');
-      dur = forceStyle();
-      log(`    ran for ${dur.toFixed(0)}ms`);
-
+      log('  → style');  forceStyle();
       await new Promise(r => setTimeout(r, 50));
-
-      log('  → Forcing paint (200 elements, requestAnimationFrame animation)...');
-      dur = await forcePaint();
-      log(`    ran for ${dur.toFixed(0)}ms`);
-
+      log('  → paint');  await forcePaint();
       await new Promise(r => setTimeout(r, 50));
-
-      log('  → Forcing GC pressure...');
-      dur = forceGC();
-      log(`    ran for ${dur.toFixed(0)}ms`);
-
+      log('  → gc');     forceGC();
       await new Promise(r => setTimeout(r, 50));
-
-      log('  → Running CPU-intensive JS...');
-      dur = forceScript();
-      log(`    ran for ${dur.toFixed(0)}ms`);
-
-      // Yield to let any pending paint/GC happen
+      log('  → script'); forceScript();
       await new Promise(r => setTimeout(r, 200));
 
-      log('\nStopping profiler...');
+      log('Stopping profiler…');
       const trace = await profiler.stop();
+      log(`Collected ${trace.samples.length} samples`);
 
-      log(`\nCollected ${trace.samples.length} samples`);
-      log(`Resources: ${trace.resources.length}`);
-      log(`Frames: ${trace.frames.length}`);
-      log(`Stacks: ${trace.stacks.length}`);
-
-      // Diagnostic: check if any sample has the marker property
-      const hasMarkerProp = trace.samples.some(s => 'marker' in s);
-      log(`\n=== DIAGNOSTIC ===`);
-      log(`"marker" property found on at least one sample: ${hasMarkerProp}`);
-      if (!hasMarkerProp) {
-        log(`  ⚠ No samples have the "marker" field.`);
-        log(`  This likely means the ExperimentalJSProfilerMarkers feature`);
-        log(`  is not enabled in this Chrome build.`);
-        log(`  Sample keys: [${Object.keys(trace.samples[0] || {}).join(', ')}]`);
+      // ── count & validate ────────────────────────────────────────────────
+      const counts = {};
+      for (const s of trace.samples) {
+        const k = effectiveMarker(s);
+        counts[k] = (counts[k] || 0) + 1;
       }
+      const allM = ['gc','layout','style','paint','script'];
+      const expected   = isCOI ? allM : ['layout','style'];
+      const unexpected = allM.filter(m => !expected.includes(m));
+      let passed = true;
+      for (const m of expected)   { if (!counts[m]) { log(`FAIL: missing ${m}`); passed = false; } }
+      for (const m of unexpected) { if (counts[m])  { log(`FAIL: unexpected ${m}`); passed = false; } }
+      log(passed ? '\n✓ PASS' : '\n✗ FAIL');
+      statusEl.textContent = passed
+        ? `✓ TEST PASSED — ${isCOI ? 'COI' : 'Non-COI'} context`
+        : `✗ TEST FAILED — ${isCOI ? 'COI' : 'Non-COI'} context`;
+      statusEl.className = passed ? 'pass' : 'fail';
 
-      // Count markers
-      const markerCounts = {};
-      let samplesWithMarker = 0;
-      let samplesWithoutMarker = 0;
+      // ── render timeline ─────────────────────────────────────────────────
+      _samples = trace.samples;
+      _trace   = trace;
 
-      for (const sample of trace.samples) {
-        if (sample.marker) {
-          samplesWithMarker++;
-          markerCounts[sample.marker] = (markerCounts[sample.marker] || 0) + 1;
-        } else {
-          samplesWithoutMarker++;
-        }
-      }
+      const presentMarkers = new Set(_samples.map(s => effectiveMarker(s)));
+      buildLegend(presentMarkers);
+      buildStats(_samples, trace);
+      wrapEl.style.display = 'block';
+      drawTimeline();
 
-      log(`\n=== MARKER RESULTS ===`);
-      log(`Samples with markers:    ${samplesWithMarker}`);
-      log(`Samples without markers: ${samplesWithoutMarker}`);
-      log('');
-
-      const allMarkers = ['gc', 'layout', 'style', 'paint', 'script'];
-      const expectedInCOI = ['gc', 'layout', 'style', 'paint', 'script'];
-      const expectedInNonCOI = ['layout', 'style'];
-
-      const expected = isCOI ? expectedInCOI : expectedInNonCOI;
-      const notExpected = allMarkers.filter(m => !expected.includes(m));
-
-      log('Markers found:');
-      for (const marker of allMarkers) {
-        const count = markerCounts[marker] || 0;
-        const shouldExist = expected.includes(marker);
-        const icon = count > 0
-          ? (shouldExist ? '✓' : '✗ UNEXPECTED')
-          : (shouldExist ? '✗ MISSING' : '✓ (correctly absent)');
-        log(`  ${icon}  ${marker}: ${count} samples`);
-      }
-
-      // Unknown markers
-      for (const [marker, count] of Object.entries(markerCounts)) {
-        if (!allMarkers.includes(marker)) {
-          log(`  ? UNKNOWN marker "${marker}": ${count} samples`);
-        }
-      }
-
-      log('\n=== VALIDATION ===');
-      let allPassed = true;
-
-      // Check expected markers appear (hard fail if missing)
-      for (const marker of expected) {
-        if (!markerCounts[marker]) {
-          log(`FAIL: Expected marker "${marker}" not found`);
-          allPassed = false;
-        }
-      }
-
-      // Check unexpected markers do NOT appear (hard fail)
-      for (const marker of notExpected) {
-        if (markerCounts[marker]) {
-          log(`FAIL: Marker "${marker}" should NOT appear in ${isCOI ? 'COI' : 'non-COI'} context but found ${markerCounts[marker]} samples`);
-          allPassed = false;
-        }
-      }
-
-      if (allPassed) {
-        log(`\n✓ PASS`);
-        statusEl.textContent = '✓ TEST PASSED';
-        statusEl.className = 'pass';
-      } else {
-        log(`\n✗ FAIL`);
-        statusEl.textContent = '✗ TEST FAILED';
-        statusEl.className = 'fail';
-      }
-
-      // Dump raw sample markers for debugging
-      log('\n=== RAW SAMPLE MARKERS (first 50) ===');
-      for (let i = 0; i < Math.min(50, trace.samples.length); i++) {
-        const s = trace.samples[i];
-        log(`  [${i}] timestamp=${s.timestamp.toFixed(2)}ms marker=${s.marker || '(none)'} stackId=${s.stackId ?? '(none)'}`);
-      }
+      btnRun.disabled = false;
+      btnRun.textContent = '▶ Run Again';
     }
   </script>
 </body>
