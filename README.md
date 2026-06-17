@@ -8,6 +8,16 @@ This fork extends Victor's functional marker test with an **interactive visual t
 
 ---
 
+## Screenshots
+
+**Non-COI context** (`layout` + `style` only):
+![Timeline — non-COI context](docs/timeline-no-coi.png)
+
+**COI context** (all five marker types):
+![Timeline — COI context](docs/timeline-coi.png)
+
+---
+
 ## What this fork adds
 
 ### Visual sample timeline
