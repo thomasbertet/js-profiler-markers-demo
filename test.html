@@ -72,33 +72,61 @@
       line-height: 1.6;
     }
     #tooltip .tt-header {
-      font-weight: bold;
-      margin-bottom: 6px;
-      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 5px;
     }
-    #tooltip .tt-marker {
+    #tooltip .tt-lane-pill {
       display: inline-block;
-      padding: 1px 7px;
+      padding: 2px 8px;
       border-radius: 3px;
       font-weight: bold;
+      font-size: 12px;
+      letter-spacing: 0.03em;
+    }
+    #tooltip .tt-section-badge {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 10px;
+      border: 1px solid;
+      font-weight: normal;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    #tooltip .tt-meta {
+      color: #666;
       font-size: 11px;
-      margin-right: 6px;
+      margin-bottom: 4px;
+    }
+    #tooltip .tt-meta b { color: #999; font-weight: normal; }
+    #tooltip .tt-reason {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 3px;
+      margin-bottom: 5px;
+      border-left: 2px solid;
     }
     #tooltip .tt-stack {
-      margin-top: 8px;
+      margin-top: 6px;
       border-top: 1px solid #2a2a3a;
       padding-top: 6px;
       color: #aaa;
     }
     #tooltip .tt-frame {
-      padding-left: 14px;
       color: #7ec8e3;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    #tooltip .tt-frame:first-child { color: #e0e0e0; padding-left: 0; }
-    #tooltip .tt-nostack { color: #e94560; font-style: italic; }
+    #tooltip .tt-frame-leaf { color: #e0e0e0; }
+    #tooltip .tt-frame-ann {
+      font-size: 10px;
+      margin-left: 6px;
+      opacity: 0.7;
+      font-style: italic;
+    }
+    #tooltip .tt-nostack { color: #777; font-style: italic; }
 
     /* ── Stats bar ── */
     #stats {
@@ -166,24 +194,79 @@
   <div id="dom-container"></div>
 
   <script>
-    // ── Marker colours ──────────────────────────────────────────────────────
+    // ── Lane definitions ─────────────────────────────────────────────────────
+    //
+    // Two sections on the same canvas:
+    //
+    //  EXPLICIT  — lanes driven by sample.marker directly
+    //  INFERRED  — lanes for no-marker samples, classified by top stack frame
+    //
+    // Inferred sub-categories (from V8 StateTag heuristics on the leaf frame):
+    //   js      — no marker + user/builtin frame  (StateTag::JS when not COI)
+    //   compile — no marker + V8 compiler frame   (StateTag::COMPILER / BYTECODE_COMPILER)
+    //   native  — no marker + callback frame      (StateTag::EXTERNAL)
+    //   idle    — no marker + no stack            (StateTag::IDLE)
+
     const MARKER_COLORS = {
-      gc:     '#e94560',
-      layout: '#0f9b58',
-      style:  '#4285f4',
-      paint:  '#f4b400',
-      script: '#ab47bc',
-      none:   '#555577',
+      // explicit
+      gc:      '#e94560',
+      layout:  '#0f9b58',
+      style:   '#4285f4',
+      paint:   '#f4b400',
+      script:  '#ab47bc',
+      // inferred
+      js:      '#ce93d8',  // lighter purple — same family as script, clearly inferred
+      compile: '#ff7043',
+      native:  '#26c6da',
+      idle:    '#37374f',
     };
 
-    const ALL_MARKERS = ['layout', 'style', 'gc', 'paint', 'script', 'none'];
+    // Ordered display lists for each section
+    const EXPLICIT_LANES = ['layout', 'style', 'gc', 'paint', 'script'];
+    const INFERRED_LANES = ['js', 'compile', 'native', 'idle'];
+    const ALL_LANES = [...EXPLICIT_LANES, ...INFERRED_LANES];
+
     const hiddenMarkers = new Set();
 
-    // Samples with no marker but a stackId are JS execution — treat as 'script'.
-    // Samples with no marker AND no stackId stay as 'none' (truly empty).
+    // V8 compiler/parser synthetic frame name prefixes
+    const COMPILER_FRAMES = new Set([
+      '(compile)', '(compile-lazy)', '(bytecode compiler)',
+      '(recompile-synchronous)', '(recompile-concurrent)',
+      '(parser)', '(script)', '(deserialize)',
+    ]);
+
+    // Returns the inferred lane key for a no-marker sample.
+    // Uses the leaf (top) frame name as a heuristic for V8 StateTag.
+    function inferredLane(sample, trace) {
+      if (sample.stackId == null) return 'idle';
+      // resolve leaf frame
+      const stack = trace.stacks[sample.stackId];
+      if (!stack) return 'idle';
+      const frame = trace.frames[stack.frameId];
+      if (!frame) return 'js';
+      const name = (frame.name || '').trim();
+      if (COMPILER_FRAMES.has(name)) return 'compile';
+      // V8 synthetic names that slip through as no-marker
+      if (name === '(garbage collector)') return 'idle'; // already counted in gc lane when marker present
+      if (name === '(idle)'  || name === '(program)') return 'idle';
+      // No function name and no resource → likely a native callback (EXTERNAL)
+      if (!name && frame.resourceId == null) return 'native';
+      // Named frame with no script resource → host / Web API callback
+      if (name && frame.resourceId == null) return 'native';
+      // Named frame with a script resource → real JS
+      return 'js';
+    }
+
+    // Returns the display lane for any sample.
+    function effectiveLane(sample, trace) {
+      if (sample.marker) return sample.marker; // explicit lane
+      return inferredLane(sample, trace);       // inferred lane
+    }
+
+    // Legacy alias used in stats (no trace needed for counts after the fact)
     function effectiveMarker(sample) {
       if (sample.marker) return sample.marker;
-      return sample.stackId != null ? 'script' : 'none';
+      return sample.stackId != null ? 'js' : 'idle';
     }
 
     // ── DOM refs ────────────────────────────────────────────────────────────
@@ -204,20 +287,42 @@
     statusEl.className = isCOI ? 'pass' : 'info';
 
     // ── Legend ──────────────────────────────────────────────────────────────
-    function buildLegend(presentMarkers) {
+    function buildLegend(presentLanes) {
       legendEl.innerHTML = '';
-      for (const m of ALL_MARKERS) {
-        if (!presentMarkers.has(m)) continue;
-        const item = document.createElement('div');
-        item.className = 'legend-item';
-        item.dataset.marker = m;
-        item.innerHTML = `<div class="legend-dot" style="background:${MARKER_COLORS[m]}"></div>${m === 'none' ? '(no marker)' : m}`;
-        item.addEventListener('click', () => {
-          hiddenMarkers.has(m) ? hiddenMarkers.delete(m) : hiddenMarkers.add(m);
-          item.classList.toggle('hidden');
-          drawTimeline();
-        });
-        legendEl.appendChild(item);
+
+      const sections = [
+        { label: 'Explicit markers', lanes: EXPLICIT_LANES },
+        { label: 'Inferred (no marker)', lanes: INFERRED_LANES },
+      ];
+
+      for (const { label, lanes } of sections) {
+        const visibleLanes = lanes.filter(l => presentLanes.has(l));
+        if (!visibleLanes.length) continue;
+
+        const sep = document.createElement('span');
+        sep.style.cssText = 'color:#555;font-size:11px;align-self:center;padding-right:4px;';
+        sep.textContent = label + ':';
+        legendEl.appendChild(sep);
+
+        for (const m of visibleLanes) {
+          const item = document.createElement('div');
+          item.className = 'legend-item';
+          item.dataset.marker = m;
+          const INFERRED_LABELS = { js: 'js (exec)', compile: 'compile', native: 'native cb', idle: 'idle', script: 'script' };
+          const label2 = INFERRED_LANES.includes(m) ? INFERRED_LABELS[m] : m;
+          item.innerHTML = `<div class="legend-dot" style="background:${MARKER_COLORS[m]}"></div>${label2}`;
+          item.addEventListener('click', () => {
+            hiddenMarkers.has(m) ? hiddenMarkers.delete(m) : hiddenMarkers.add(m);
+            item.classList.toggle('hidden');
+            drawTimeline();
+          });
+          legendEl.appendChild(item);
+        }
+
+        // small gap between sections
+        const spacer = document.createElement('span');
+        spacer.style.cssText = 'display:inline-block;width:16px;';
+        legendEl.appendChild(spacer);
       }
     }
 
@@ -225,7 +330,7 @@
     function buildStats(samples, trace) {
       const counts = {};
       for (const s of samples) {
-        const k = effectiveMarker(s);
+        const k = effectiveLane(s, trace);
         counts[k] = (counts[k] || 0) + 1;
       }
       statsEl.style.display = 'flex';
@@ -235,40 +340,56 @@
       totalBox.innerHTML = `<span>${samples.length}</span>total samples`;
       statsEl.appendChild(totalBox);
 
-      const noStackCount = samples.filter(s => s.stackId == null).length;
-      const noStackBox = document.createElement('div');
-      noStackBox.className = 'stat-box';
-      noStackBox.innerHTML = `<span style="color:#e94560">${noStackCount}</span>no stack`;
-      statsEl.appendChild(noStackBox);
-
-      for (const m of ALL_MARKERS) {
+      for (const m of ALL_LANES) {
         if (!counts[m]) continue;
+        const LABELS = { js: 'js (exec)', compile: 'compile', native: 'native cb', idle: 'idle' };
+        const lbl = LABELS[m] || m;
         const box = document.createElement('div');
         box.className = 'stat-box';
-        box.innerHTML = `<span style="color:${MARKER_COLORS[m]}">${counts[m]}</span>${m === 'none' ? '(no marker)' : m}`;
+        box.innerHTML = `<span style="color:${MARKER_COLORS[m]}">${counts[m]}</span>${lbl}`;
         statsEl.appendChild(box);
       }
     }
 
     // ── Timeline drawing ────────────────────────────────────────────────────
-    let _samples = [];
-    let _trace   = null;
+    let _samples  = [];
+    let _trace    = null;
     let _hitBoxes = [];   // [{x, y, w, h, sample}]
 
     const ROW_H    = 22;
     const DOT_W    = 6;
     const DOT_H    = 14;
-    const ROWS     = ALL_MARKERS.length;
-    const PAD_L    = 64;  // left gutter for labels
+    const PAD_L    = 80;  // left gutter for labels
     const PAD_T    = 4;
-    const PAD_B    = 4;
+    const PAD_B    = 8;
+    // Extra vertical space consumed by the section divider
+    const DIV_H    = 18;
+
+    // Map a lane key to its canvas Y offset, accounting for the divider
+    function laneY(key) {
+      const eIdx = EXPLICIT_LANES.indexOf(key);
+      if (eIdx !== -1) {
+        return PAD_T + eIdx * ROW_H;
+      }
+      const iIdx = INFERRED_LANES.indexOf(key);
+      // explicit section height + divider + inferred rows
+      return PAD_T + EXPLICIT_LANES.length * ROW_H + DIV_H + iIdx * ROW_H;
+    }
+
+    function canvasHeight() {
+      return PAD_T
+        + EXPLICIT_LANES.length * ROW_H
+        + DIV_H
+        + INFERRED_LANES.length * ROW_H
+        + PAD_B;
+    }
 
     function drawTimeline() {
       if (!_samples.length) return;
 
-      const dpr    = window.devicePixelRatio || 1;
-      const cssW   = canvas.parentElement.clientWidth - 24;
-      const cssH   = PAD_T + ROWS * ROW_H + PAD_B;
+      const dpr  = window.devicePixelRatio || 1;
+      const cssW = canvas.parentElement.clientWidth - 24;
+      const cssH = canvasHeight();
       canvas.style.width  = cssW + 'px';
       canvas.style.height = cssH + 'px';
       canvas.width  = Math.round(cssW * dpr);
@@ -281,22 +402,58 @@
       ctx.fillStyle = '#12121f';
       ctx.fillRect(0, 0, cssW, cssH);
 
-      // row bands
-      for (let r = 0; r < ROWS; r++) {
-        // label gutter (always dark)
-        ctx.fillStyle = '#0d0d1a';
-        ctx.fillRect(0, PAD_T + r * ROW_H, PAD_L, ROW_H);
-        // sample area band
-        ctx.fillStyle = r % 2 === 0 ? '#14142a' : '#12121f';
-        ctx.fillRect(PAD_L, PAD_T + r * ROW_H, cssW - PAD_L, ROW_H);
-        // row label — right-aligned inside gutter
-        const label = ALL_MARKERS[r] === 'none' ? '(none)' : ALL_MARKERS[r];
-        ctx.fillStyle = MARKER_COLORS[ALL_MARKERS[r]];
-        ctx.font = '11px monospace';
-        const tw = ctx.measureText(label).width;
-        ctx.fillText(label, PAD_L - tw - 8, PAD_T + r * ROW_H + ROW_H / 2 + 4);
+      // ── Draw row bands + labels ──────────────────────────────────────────
+      function drawSection(lanes, sectionLabel) {
+        for (let r = 0; r < lanes.length; r++) {
+          const key = lanes[r];
+          const y   = laneY(key);
+
+          // label gutter
+          ctx.fillStyle = '#0d0d1a';
+          ctx.fillRect(0, y, PAD_L, ROW_H);
+          // sample area band
+          ctx.fillStyle = r % 2 === 0 ? '#14142a' : '#12121f';
+          ctx.fillRect(PAD_L, y, cssW - PAD_L, ROW_H);
+
+          // row label — right-aligned in gutter
+          const LABELS = { js: 'js (exec)', compile: 'compile', native: 'native cb', idle: 'idle' };
+          const label = LABELS[key] || key;
+          ctx.fillStyle = MARKER_COLORS[key];
+          ctx.font = '11px monospace';
+          const tw = ctx.measureText(label).width;
+          ctx.fillText(label, PAD_L - tw - 8, y + ROW_H / 2 + 4);
+        }
       }
-      // separator line between gutter and samples
+
+      drawSection(EXPLICIT_LANES, 'explicit');
+      drawSection(INFERRED_LANES, 'inferred');
+
+      // ── Section divider ──────────────────────────────────────────────────
+      const divY = PAD_T + EXPLICIT_LANES.length * ROW_H;
+
+      // faint full-width rule
+      ctx.strokeStyle = '#2a2a4a';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(PAD_L, divY + DIV_H / 2);
+      ctx.lineTo(cssW, divY + DIV_H / 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // divider label in gutter
+      ctx.fillStyle = '#0d0d1a';
+      ctx.fillRect(0, divY, PAD_L, DIV_H);
+      ctx.fillStyle = '#3a3a5a';
+      ctx.font = '9px monospace';
+      ctx.fillText('inferred ▼', 4, divY + DIV_H / 2 + 3);
+
+      // divider label in sample area
+      ctx.fillStyle = '#3a3a5a';
+      ctx.font = '9px monospace';
+      ctx.fillText('── no explicit marker ────────────────────', PAD_L + 6, divY + DIV_H / 2 + 3);
+
+      // ── Vertical gutter separator ─────────────────────────────────────────
       ctx.strokeStyle = '#2a2a3e';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -304,38 +461,36 @@
       ctx.lineTo(PAD_L, cssH);
       ctx.stroke();
 
-      // time range
-      const times = _samples.map(s => s.timestamp);
-      const tMin  = Math.min(...times);
-      const tMax  = Math.max(...times);
-      const tSpan = tMax - tMin || 1;
-
+      // ── Samples ───────────────────────────────────────────────────────────
+      const times   = _samples.map(s => s.timestamp);
+      const tMin    = Math.min(...times);
+      const tMax    = Math.max(...times);
+      const tSpan   = tMax - tMin || 1;
       const usableW = cssW - PAD_L - 8;
 
       _hitBoxes = [];
 
       for (const sample of _samples) {
-        const key = effectiveMarker(sample);
+        const key = effectiveLane(sample, _trace);
         if (hiddenMarkers.has(key)) continue;
-        const rowIdx = ALL_MARKERS.indexOf(key);
-        if (rowIdx === -1) continue;
+        if (!MARKER_COLORS[key]) continue;
 
-        const x = PAD_L + ((sample.timestamp - tMin) / tSpan) * usableW;
-        const y = PAD_T + rowIdx * ROW_H + (ROW_H - DOT_H) / 2;
-
+        const x     = PAD_L + ((sample.timestamp - tMin) / tSpan) * usableW;
+        const y     = laneY(key) + (ROW_H - DOT_H) / 2;
         const color = MARKER_COLORS[key];
-        const hasStack = sample.stackId != null;
 
-        ctx.fillStyle = color;
-        ctx.globalAlpha = hasStack ? 0.85 : 0.4;
-        // diamond shape for no-stack samples
-        if (!hasStack) {
-          ctx.save();
-          ctx.translate(x + DOT_W / 2, y + DOT_H / 2);
-          ctx.rotate(Math.PI / 4);
-          ctx.fillRect(-DOT_W * 0.4, -DOT_H * 0.4, DOT_W * 0.8, DOT_H * 0.8);
-          ctx.restore();
+        // Explicit markers — solid filled rect
+        // Inferred lanes   — outlined rect (stroke only), slightly transparent
+        const isInferred = INFERRED_LANES.includes(key);
+        ctx.globalAlpha = isInferred ? 0.65 : 0.85;
+
+        if (isInferred) {
+          ctx.strokeStyle = color;
+          ctx.lineWidth   = 1.5;
+          roundRect(ctx, x, y, DOT_W, DOT_H, 2);
+          ctx.stroke();
         } else {
+          ctx.fillStyle = color;
           roundRect(ctx, x, y, DOT_W, DOT_H, 2);
           ctx.fill();
         }
@@ -421,29 +576,74 @@
 
       if (!hit) { tooltipEl.style.display = 'none'; return; }
 
-      const s      = hit.sample;
-      const key    = effectiveMarker(s);
-      const color  = MARKER_COLORS[key];
-      const frames = resolveStack(s.stackId, _trace);
+      const s          = hit.sample;
+      const key        = effectiveLane(s, _trace);
+      const color      = MARKER_COLORS[key];
+      const frames     = resolveStack(s.stackId, _trace);
+      const isInferred = INFERRED_LANES.includes(key);
 
-      const inferredScript = !s.marker && s.stackId != null;
+      const LANE_LABELS = {
+        js: 'js (exec)', compile: 'compile', native: 'native cb', idle: 'idle',
+        layout: 'layout', style: 'style', gc: 'gc', paint: 'paint', script: 'script',
+      };
+      const INFERRED_REASONS = {
+        js:      { icon: '⚙', text: 'JS execution — explicit <code>script</code> marker suppressed (no COI)' },
+        compile: { icon: '⚙', text: 'V8 compiler / parser overhead — classified from leaf frame name' },
+        native:  { icon: '⚙', text: 'Native / host callback invoked from JS — no script resource on leaf frame' },
+        idle:    { icon: '○', text: 'Idle — no stack was captured for this sample' },
+      };
+      // Leaf-frame annotation shown inline next to the top frame
+      const LEAF_ANN = {
+        compile: '← drove lane classification',
+        native:  '← drove lane classification',
+      };
+
+      const laneLabel  = LANE_LABELS[key] || key;
+      const pillColor  = key === 'paint' ? '#000' : '#fff';
+      const badgeColor = isInferred ? '#4a4a6a' : '#1a3a2a';
+      const badgeText  = isInferred ? 'inferred' : 'explicit';
+      const badgeBorder= isInferred ? '#5a5a8a' : '#28a745';
+      const badgeFg    = isInferred ? '#9999cc' : '#5ddb85';
+
+      // ── header: pill + section badge
       let html = `<div class="tt-header">`;
-      html += `<span class="tt-marker" style="background:${color};color:${key==='paint'?'#000':'#fff'}">${key === 'none' ? '(no marker)' : key}${inferredScript ? ' ❖' : ''}</span>`;
-      if (inferredScript) html += `<span style="color:#888;font-size:10px"> inferred from stack</span>`;
-      html += `t = ${s.timestamp.toFixed(3)} ms</div>`;
-      html += `<div>stackId: ${s.stackId != null ? s.stackId : '<span style="color:#e94560">none</span>'}</div>`;
+      html += `<span class="tt-lane-pill" style="background:${color};color:${pillColor}">${laneLabel}</span>`;
+      html += `<span class="tt-section-badge" style="background:${badgeColor};color:${badgeFg};border-color:${badgeBorder}">${badgeText}</span>`;
+      html += `</div>`;
 
+      // ── meta: timestamp · raw marker · stack presence
+      const rawMarker = s.marker ? `<b>${s.marker}</b>` : `<span style="color:#555">(none)</span>`;
+      const stackInfo = s.stackId != null
+        ? `stackId <b>${s.stackId}</b>`
+        : `<span style="color:#e94560">no stack</span>`;
+      html += `<div class="tt-meta">t = <b>${s.timestamp.toFixed(3)} ms</b> &nbsp;·&nbsp; marker: ${rawMarker} &nbsp;·&nbsp; ${stackInfo}</div>`;
+
+      // ── inferred reason box
+      if (isInferred) {
+        const r = INFERRED_REASONS[key];
+        html += `<div class="tt-reason" style="background:#1a1a2e;border-color:${color};color:#aaa">`;
+        html += `${r.icon} ${r.text}`;
+        html += `</div>`;
+      }
+
+      // ── stack frames
       if (!frames || frames.length === 0) {
-        html += `<div class="tt-stack"><span class="tt-nostack">⚠ no stack associated with this sample</span></div>`;
+        const msg = key === 'idle'
+          ? 'No stack — CPU was idle or sample occurred between tasks'
+          : '⚠ stack expected but not found';
+        html += `<div class="tt-stack"><span class="tt-nostack">${msg}</span></div>`;
       } else {
         html += `<div class="tt-stack">`;
-        // show leaf (last) first, then parents
+        // frames array is root→leaf; reverse to show leaf first
         const reversed = [...frames].reverse();
         for (let i = 0; i < reversed.length; i++) {
           const { name, loc } = formatFrame(reversed[i]);
-          html += `<div class="tt-frame${i === 0 ? '' : ''}" style="padding-left:${i * 10}px">`;
-          html += `<span style="color:${i===0?'#e0e0e0':'#7ec8e3'}">${name}</span>`;
+          const isLeaf = i === 0;
+          const ann    = isLeaf && LEAF_ANN[key] ? `<span class="tt-frame-ann">${LEAF_ANN[key]}</span>` : '';
+          html += `<div class="tt-frame ${isLeaf ? 'tt-frame-leaf' : ''}" style="padding-left:${i * 10}px">`;
+          html += `<span>${name}</span>`;
           if (loc) html += ` <span style="color:#555577;font-size:10px">${loc}</span>`;
+          html += ann;
           html += `</div>`;
         }
         html += `</div>`;
@@ -652,8 +852,8 @@
       _samples = trace.samples;
       _trace   = trace;
 
-      const presentMarkers = new Set(_samples.map(s => effectiveMarker(s)));
-      buildLegend(presentMarkers);
+      const presentLanes = new Set(_samples.map(s => effectiveLane(s, trace)));
+      buildLegend(presentLanes);
       buildStats(_samples, trace);
       wrapEl.style.display = 'block';
       drawTimeline();
