@@ -1,7 +1,7 @@
 # JS Self-Profiling: Safe Markers in Non-Isolated Contexts — Timeline Visualisation
 
 > **Based on the original demo by [Victor Huang](https://github.com/victorhuangwq)** —
-> see the upstream repo at [DataDog/js-profiler-markers-demo](https://github.com/DataDog/js-profiler-markers-demo)
+> see the upstream repo at [victorhuangwq/js-profiler-markers-demo](https://github.com/victorhuangwq/js-profiler-markers-demo)
 > and his README for the full background on the Chromium change.
 
 This fork extends Victor's functional marker test with an **interactive visual timeline** to make it easier to see exactly when and how often each marker type fires, and to inspect the call stack behind each sample.
@@ -101,7 +101,7 @@ The timeline appears below the button once profiling completes. Hover any dot to
 
 ## Links
 
-- **Original demo:** [DataDog/js-profiler-markers-demo](https://github.com/DataDog/js-profiler-markers-demo) by [Victor Huang](https://github.com/victorhuangwq)
+- **Original demo:** [victorhuangwq/js-profiler-markers-demo](https://github.com/victorhuangwq/js-profiler-markers-demo) by [Victor Huang](https://github.com/victorhuangwq)
 - **Chromium CL:** [chromium-review.googlesource.com/c/chromium/src/+/6012522](https://chromium-review.googlesource.com/c/chromium/src/+/6012522)
 - **Spec PR:** [WICG/js-self-profiling#85](https://github.com/WICG/js-self-profiling/pull/85)
 - **Edge Explainer:** [MSEdgeExplainers/ConditionalMarkersExposure](https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ConditionalMarkersExposure/explainer.md)
