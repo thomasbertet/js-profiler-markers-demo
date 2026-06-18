@@ -825,11 +825,15 @@
     }
 
     function forcePaint() {
+      // Force main-thread rasterization by mutating non-compositor properties
+      // each frame. transform/opacity are GPU-composited and bypass paint.
+      // box-shadow, border-radius, background-color and outline all require
+      // the main thread to re-rasterize, producing paint markers.
       const container = document.getElementById('dom-container');
       container.style.display = 'block';
       for (let i = 0; i < 200; i++) {
         const div = document.createElement('div');
-        div.style.cssText = `width:${50+i}px;height:20px;background:hsl(${i},80%,50%);margin:1px;`;
+        div.style.cssText = `width:60px;height:20px;display:inline-block;margin:2px;`;
         container.appendChild(div);
       }
       return new Promise(resolve => {
@@ -838,9 +842,12 @@
         function frame() {
           const children = container.children;
           for (let i = 0; i < children.length; i++) {
-            children[i].style.transform = `translateX(${Math.sin(frames + i) * 50}px)`;
-            children[i].style.opacity = 0.5 + 0.5 * Math.cos(frames + i);
-            children[i].style.backgroundColor = `hsl(${(frames * 10 + i) % 360},80%,50%)`;
+            const t = frames + i;
+            // These all force main-thread paint (not compositor-only)
+            children[i].style.backgroundColor = `hsl(${(t * 7) % 360},80%,50%)`;
+            children[i].style.borderRadius = `${(t % 10)}px`;
+            children[i].style.boxShadow = `0 0 ${(t % 8) + 2}px hsl(${(t * 13) % 360},70%,40%)`;
+            children[i].style.outline = `${(t % 3) + 1}px solid hsl(${(t * 17) % 360},60%,50%)`;
           }
           frames++;
           if (performance.now() - start < 300) requestAnimationFrame(frame);

@@ -91,6 +91,8 @@ The JS Self-Profiling API's `ProfilerSample.marker` field was previously gated e
 | Non-isolated (no COOP/COEP) | ✓ | ✓ | — | — | — |
 | Cross-Origin Isolated | ✓ | ✓ | ✓ | ✓ | ✓ |
 
+> **Note on `paint`:** despite being defined in the spec and the Chromium CL, we have not been able to observe `paint` markers in practice — neither in this demo nor in Victor's original. The marker lane is kept in the timeline for completeness, but don't expect to see it fire.
+
 ---
 
 ## Running the demo
