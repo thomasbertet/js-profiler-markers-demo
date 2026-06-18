@@ -47,9 +47,19 @@ Explicit markers are drawn as **solid filled rects**; inferred lanes as **outlin
 
 ### Why inferred lanes exist
 
-In the Chromium implementation ([`profiler_trace_builder.h`](https://chromium.googlesource.com/chromium/src/+/1f1f610cb6a035a830c85523e5e59e25446ed2bf/third_party/blink/renderer/bindings/core/v8/profiler_trace_builder.h)), `VMStateToMarker()` maps V8's internal `StateTag::JS` and `ATOMICS_WAIT` to the `script` marker — i.e. any ordinary JS execution gets `marker: "script"`. However only two states produce *no* marker at all from `VMStateToMarker`: everything that isn't `JS`, `ATOMICS_WAIT`, or `GC`.
+In the Chromium implementation ([`profiler_trace_builder.h`](https://chromium.googlesource.com/chromium/src/+/1f1f610cb6a035a830c85523e5e59e25446ed2bf/third_party/blink/renderer/bindings/core/v8/profiler_trace_builder.h)), `VMStateToMarker()` assigns markers based on V8's internal `StateTag`:
 
-Outside COI, `ProfileMarkerToPublicMarker()` strips all markers except `layout` and `style` to `nullopt`. This means samples that *would* carry `marker: "script"` in a COI context arrive with no marker field — yet they still have a `stackId`, because stack capture is independent of marker filtering. The same applies to compiler overhead (`COMPILER`, `BYTECODE_COMPILER`), native callbacks (`EXTERNAL`), and idle samples.
+| V8 `StateTag` | `marker` value | What it means |
+|---|---|---|
+| `JS`, `ATOMICS_WAIT` | `script` | Ordinary JS execution |
+| `GC` | `gc` | Garbage collection |
+| `COMPILER`, `BYTECODE_COMPILER`, `PARSER` | *(none)* | JIT compilation / parsing — JS triggered it but V8 is no longer executing user code |
+| `EXTERNAL` | *(none)* | Native/host callback called from JS (DOM API, Web API, etc.) |
+| `IDLE` | *(none)* | Nothing executing |
+
+Blink's embedder state layer adds `layout`, `style`, and `paint` on top of this via `BlinkStateToMarker()`.
+
+In a **COI context** all of these markers are exposed as-is. Outside COI, `ProfileMarkerToPublicMarker()` strips everything except `layout` and `style` — so samples that would have been `marker: "script"` (i.e. `StateTag::JS`) arrive with no marker field at all. They still carry a `stackId` because stack capture happens independently of marker filtering.
 
 The inferred lanes recover this information from the stack:
 
@@ -71,10 +81,6 @@ Hovering a sample dot shows:
 ### Stats bar
 
 A summary row shows total sample count and a per-lane breakdown, updated on every run.
-
-### Responsive & HiDPI-aware
-
-The canvas redraws on window resize and is scaled by `devicePixelRatio` to stay sharp on retina displays.
 
 ---
 
