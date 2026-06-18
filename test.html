@@ -221,75 +221,41 @@
     // Two sections on the same canvas:
     //
     //  EXPLICIT  — lanes driven by sample.marker directly
-    //  INFERRED  — lanes for no-marker samples, classified by top stack frame
-    //
-    // Inferred sub-categories (from V8 StateTag heuristics on the leaf frame):
-    //   js      — no marker + user/builtin frame  (StateTag::JS when not COI)
-    //   compile — no marker + V8 compiler frame   (StateTag::COMPILER / BYTECODE_COMPILER)
-    //   native  — no marker + callback frame      (StateTag::EXTERNAL)
-    //   idle    — no marker + no stack            (StateTag::IDLE)
+    //  INFERRED  — lanes for no-marker samples:
+    //   js   — no marker + has stack  (script marker suppressed outside COI)
+    //   idle — no marker + no stack
 
     const MARKER_COLORS = {
       // explicit
-      gc:      '#e94560',
-      layout:  '#0f9b58',
-      style:   '#4285f4',
-      paint:   '#f4b400',
-      script:  '#ab47bc',
+      gc:     '#e94560',
+      layout: '#0f9b58',
+      style:  '#4285f4',
+      paint:  '#f4b400',
+      script: '#ab47bc',
       // inferred
-      js:      '#ce93d8',  // lighter purple — same family as script, clearly inferred
-      compile: '#ff7043',
-      native:  '#26c6da',
-      idle:    '#6b6b8a',
+      js:     '#ce93d8',  // lighter purple — same family as script, clearly inferred
+      idle:   '#6b6b8a',
     };
 
     // Ordered display lists for each section
     const EXPLICIT_LANES = ['layout', 'style', 'gc', 'paint', 'script'];
-    const INFERRED_LANES = ['js', 'compile', 'native', 'idle'];
+    const INFERRED_LANES = ['js', 'idle'];
     const ALL_LANES = [...EXPLICIT_LANES, ...INFERRED_LANES];
 
     const hiddenMarkers = new Set();
 
-    // V8 compiler/parser synthetic frame name prefixes
-    const COMPILER_FRAMES = new Set([
-      '(compile)', '(compile-lazy)', '(bytecode compiler)',
-      '(recompile-synchronous)', '(recompile-concurrent)',
-      '(parser)', '(script)', '(deserialize)',
-    ]);
-
     // Returns the inferred lane key for a no-marker sample.
-    // Uses the leaf (top) frame name as a heuristic for V8 StateTag.
-    function inferredLane(sample, trace) {
-      if (sample.stackId == null) return 'idle';
-      // resolve leaf frame
-      const stack = trace.stacks[sample.stackId];
-      if (!stack) return 'idle';
-      const frame = trace.frames[stack.frameId];
-      if (!frame) return 'js';
-      const name = (frame.name || '').trim();
-      if (COMPILER_FRAMES.has(name)) return 'compile';
-      // V8 synthetic names that slip through as no-marker
-      if (name === '(garbage collector)') return 'idle'; // already counted in gc lane when marker present
-      if (name === '(idle)'  || name === '(program)') return 'idle';
-      // No function name and no resource → likely a native callback (EXTERNAL)
-      if (!name && frame.resourceId == null) return 'native';
-      // Named frame with no script resource → host / Web API callback
-      if (name && frame.resourceId == null) return 'native';
-      // Named frame with a script resource → real JS
-      return 'js';
+    function inferredLane(sample) {
+      return sample.stackId == null ? 'idle' : 'js';
     }
 
     // Returns the display lane for any sample.
-    function effectiveLane(sample, trace) {
+    function effectiveLane(sample) {
       if (sample.marker) return sample.marker; // explicit lane
-      return inferredLane(sample, trace);       // inferred lane
+      return inferredLane(sample);             // inferred lane
     }
 
-    // Legacy alias used in stats (no trace needed for counts after the fact)
-    function effectiveMarker(sample) {
-      if (sample.marker) return sample.marker;
-      return sample.stackId != null ? 'js' : 'idle';
-    }
+
 
     // ── DOM refs ────────────────────────────────────────────────────────────
     const statusEl   = document.getElementById('status');
@@ -330,7 +296,7 @@
           const item = document.createElement('div');
           item.className = 'legend-item';
           item.dataset.marker = m;
-          const INFERRED_LABELS = { js: 'js (exec)', compile: 'compile', native: 'native cb', idle: 'idle', script: 'script' };
+          const INFERRED_LABELS = { js: 'js (exec)', idle: 'idle' };
           const label2 = INFERRED_LANES.includes(m) ? INFERRED_LABELS[m] : m;
           item.innerHTML = `<div class="legend-dot" style="background:${MARKER_COLORS[m]}"></div>${label2}`;
           item.addEventListener('click', () => {
@@ -352,7 +318,7 @@
     function buildStats(samples, trace) {
       const counts = {};
       for (const s of samples) {
-        const k = effectiveLane(s, trace);
+        const k = effectiveLane(s);
         counts[k] = (counts[k] || 0) + 1;
       }
       statsEl.style.display = 'flex';
@@ -364,7 +330,7 @@
 
       for (const m of ALL_LANES) {
         if (!counts[m]) continue;
-        const LABELS = { js: 'js (exec)', compile: 'compile', native: 'native cb', idle: 'idle' };
+        const LABELS = { js: 'js (exec)', idle: 'idle' };
         const lbl = LABELS[m] || m;
         const box = document.createElement('div');
         box.className = 'stat-box';
@@ -438,7 +404,7 @@
           ctx.fillRect(PAD_L, y, cssW - PAD_L, ROW_H);
 
           // row label — right-aligned in gutter
-          const LABELS = { js: 'js (exec)', compile: 'compile', native: 'native cb', idle: 'idle' };
+          const LABELS = { js: 'js (exec)', idle: 'idle' };
           const label = LABELS[key] || key;
           ctx.fillStyle = MARKER_COLORS[key];
           ctx.font = '11px monospace';
@@ -493,7 +459,7 @@
       _hitBoxes = [];
 
       for (const sample of _samples) {
-        const key = effectiveLane(sample, _trace);
+        const key = effectiveLane(sample);
         if (hiddenMarkers.has(key)) continue;
         if (!MARKER_COLORS[key]) continue;
 
@@ -675,25 +641,18 @@
       if (!hit) { tooltipEl.style.display = 'none'; return; }
 
       const s          = hit.sample;
-      const key        = effectiveLane(s, _trace);
+      const key        = effectiveLane(s);
       const color      = MARKER_COLORS[key];
       const frames     = resolveStack(s.stackId, _trace);
       const isInferred = INFERRED_LANES.includes(key);
 
       const LANE_LABELS = {
-        js: 'js (exec)', compile: 'compile', native: 'native cb', idle: 'idle',
+        js: 'js (exec)', idle: 'idle',
         layout: 'layout', style: 'style', gc: 'gc', paint: 'paint', script: 'script',
       };
       const INFERRED_REASONS = {
         js:      { icon: '⚙', text: 'JS execution — explicit <code>script</code> marker suppressed (no COI)' },
-        compile: { icon: '⚙', text: 'V8 compiler / parser overhead — classified from leaf frame name' },
-        native:  { icon: '⚙', text: 'Native / host callback invoked from JS — no script resource on leaf frame' },
-        idle:    { icon: '○', text: 'Idle — no stack was captured for this sample' },
-      };
-      // Leaf-frame annotation shown inline next to the top frame
-      const LEAF_ANN = {
-        compile: '← drove lane classification',
-        native:  '← drove lane classification',
+        idle: { icon: '○', text: 'Idle — no stack was captured for this sample' },
       };
 
       const laneLabel  = LANE_LABELS[key] || key;
@@ -737,7 +696,7 @@
         for (let i = 0; i < reversed.length; i++) {
           const { name, loc } = formatFrame(reversed[i]);
           const isLeaf = i === 0;
-          const ann    = isLeaf && LEAF_ANN[key] ? `<span class="tt-frame-ann">${LEAF_ANN[key]}</span>` : '';
+          const ann    = '';
           html += `<div class="tt-frame ${isLeaf ? 'tt-frame-leaf' : ''}" style="padding-left:${i * 10}px">`;
           html += `<span>${name}</span>`;
           if (loc) html += ` <span style="color:#555577;font-size:10px">${loc}</span>`;
@@ -932,7 +891,7 @@
       await new Promise(r => setTimeout(r, 50));
       log('  → gc');     forceGC();
       await new Promise(r => setTimeout(r, 50));
-      log('  → script'); forceScript();
+      log('  → script');  forceScript();
       await new Promise(r => setTimeout(r, 200));
 
       log('Stopping profiler…');
@@ -942,7 +901,7 @@
       // ── count & validate ────────────────────────────────────────────────
       const counts = {};
       for (const s of trace.samples) {
-        const k = effectiveMarker(s);
+        const k = effectiveLane(s);
         counts[k] = (counts[k] || 0) + 1;
       }
       const allM = ['gc','layout','style','paint','script'];
@@ -961,7 +920,7 @@
       _samples = trace.samples;
       _trace   = trace;
 
-      const presentLanes = new Set(_samples.map(s => effectiveLane(s, trace)));
+      const presentLanes = new Set(_samples.map(s => effectiveLane(s)));
       buildLegend(presentLanes);
       buildStats(_samples, trace);
       wrapEl.style.display = 'block';

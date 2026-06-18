@@ -34,13 +34,11 @@ After running the profiling test, every collected sample is plotted on a canvas 
 | `paint` | 🟡 yellow | COI only |
 | `script` | 🟣 dark purple | COI only |
 
-**Inferred** — lanes for samples with no `marker` field, classified by inspecting the leaf stack frame:
+**Inferred** — lanes for samples with no `marker` field:
 
-| Lane | Colour | Heuristic |
-|------|--------|-----------|
-| `js (exec)` | 🟣 light purple | leaf frame has a script resource — JS execution with suppressed `script` marker |
-| `compile` | 🟠 orange | leaf frame name matches V8 compiler/parser internals (`(compile)`, `(bytecode compiler)`, etc.) |
-| `native cb` | 🔵 teal | leaf frame has no script resource — host/Web API callback invoked from JS |
+| Lane | Colour | Meaning |
+|------|--------|---------|
+| `js (exec)` | 🟣 light purple | has a stack — JS was executing, `script` marker suppressed outside COI |
 | `idle` | ⬛ blue-grey | no stack captured |
 
 Explicit markers are drawn as **solid filled rects**; inferred lanes as **outlined rects** (lower opacity) to make the distinction immediately visible. The legend is **clickable** — toggle any lane on/off.
@@ -53,7 +51,7 @@ In the Chromium implementation ([`profiler_trace_builder.h`](https://chromium.go
 |---|---|---|
 | `JS`, `ATOMICS_WAIT` | `script` | Ordinary JS execution |
 | `GC` | `gc` | Garbage collection |
-| `COMPILER`, `BYTECODE_COMPILER`, `PARSER` | *(none)* | JIT compilation / parsing — JS triggered it but V8 is no longer executing user code |
+| `COMPILER`, `BYTECODE_COMPILER`, `PARSER` | *(none)* | JIT compilation / parsing — no JS frames captured, samples appear stackless or as `js (exec)` |
 | `EXTERNAL` | *(none)* | Native/host callback called from JS (DOM API, Web API, etc.) |
 | `IDLE` | *(none)* | Nothing executing |
 
@@ -63,10 +61,10 @@ In a **COI context** all of these markers are exposed as-is. Outside COI, `Profi
 
 The inferred lanes recover this information from the stack:
 
-- **`js (exec)`** — no marker + leaf frame has a script resource → suppressed `script` marker (V8 was in `StateTag::JS`)
-- **`compile`** — no marker + leaf frame name is a V8 compiler/parser synthetic (`(compile)`, `(bytecode compiler)`, `(parser)`…) → compiler/JIT overhead
-- **`native cb`** — no marker + leaf frame has no script resource → `StateTag::EXTERNAL`, a host API callback called from JS
-- **`idle`** — no marker + no stack → truly idle, nothing executing
+- **`js (exec)`** — no marker + has stack → JS was executing, `script` marker was suppressed by `ProfileMarkerToPublicMarker()` (non-COI context)
+- **`idle`** — no marker + no stack → nothing executing at sample time
+
+Note: the JS Self-Profiling API is a user-space profiler — it only captures JavaScript frames. V8 compiler/parser internals (`StateTag::COMPILER`, `BYTECODE_COMPILER`, etc.) are not visible in the stack; those states simply produce no frames in the trace.
 
 ### Hover tooltip
 
